@@ -1,7 +1,8 @@
 import asyncio
 import time
 
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 from loguru import logger
 
 from ..core.errors import KeysetNotFoundError
@@ -29,6 +30,7 @@ from ..core.settings import settings
 from ..mint.startup import ledger
 from .cache import RedisCache
 from .limit import limit_websocket, limiter
+from .opentimestamps import decode_ots_proof
 
 router = APIRouter()
 redis = RedisCache()
@@ -401,3 +403,176 @@ async def restore(payload: PostRestoreRequest) -> PostRestoreResponse:
     assert payload.outputs, Exception("no outputs provided.")
     outputs, signatures = await ledger.restore(payload.outputs)
     return PostRestoreResponse(outputs=outputs, signatures=signatures)
+
+
+_pol_service_instance = None
+
+
+def _get_pol_service():
+    global _pol_service_instance
+    if _pol_service_instance is None:
+        from .pol_service import PoLService
+        _pol_service_instance = PoLService(
+            db=ledger.db,
+            crud=ledger.crud,
+            keysets=ledger.keysets,
+            mint_pubkey=ledger.pubkey.format().hex(),
+            seed=ledger.seed,
+        )
+    return _pol_service_instance
+
+
+@router.get(
+    "/v1/pol/roots/{keyset_id}",
+    name="Get PoL Merkle roots",
+    summary="Get current Merkle Sum Tree roots",
+    tags=["Proof of Liabilities"],
+)
+async def get_pol_roots(keyset_id: str, epoch_date: str = None):
+    """Get current Merkle Sum Tree roots for a keyset."""
+    service = _get_pol_service()
+    roots = await service.get_merkle_roots(keyset_id, epoch_date)
+    return roots.model_dump()
+
+
+@router.get(
+    "/v1/pol/history/{keyset_id}",
+    name="Get PoL epoch history",
+    summary="Get historical epochs",
+    tags=["Proof of Liabilities"],
+)
+async def get_pol_history(keyset_id: str, limit: int = 30):
+    """Get historical closed epochs for a keyset."""
+    service = _get_pol_service()
+    history = await service.get_epoch_history(keyset_id, limit)
+    return history.model_dump()
+
+
+@router.get(
+    "/v1/pol/verify/mint/{keyset_id}/{B_}",
+    name="Verify mint inclusion",
+    summary="Check if B_ is in mint tree",
+    tags=["Proof of Liabilities"],
+)
+async def verify_mint_proof(keyset_id: str, B_: str, epoch_date: str = None):
+    """Verify a B_ is included in the mint Merkle tree."""
+    service = _get_pol_service()
+    status, proof = await service.get_mint_proof_inclusion(keyset_id, B_, epoch_date)
+    return {
+        "keyset_id": keyset_id,
+        "B_": B_,
+        "status": status,
+        "proof": proof.model_dump() if proof else None,
+    }
+
+
+@router.get(
+    "/v1/pol/verify/burn/{keyset_id}/{Y}",
+    name="Verify burn inclusion",
+    summary="Check if Y is in burn tree",
+    tags=["Proof of Liabilities"],
+)
+async def verify_burn_proof(keyset_id: str, Y: str, epoch_date: str = None):
+    """Verify a Y is included in the burn Merkle tree."""
+    service = _get_pol_service()
+    status, proof = await service.get_burn_proof_inclusion(keyset_id, Y, epoch_date)
+    return {
+        "keyset_id": keyset_id,
+        "Y": Y,
+        "status": status,
+        "proof": proof.model_dump() if proof else None,
+    }
+
+
+@router.get(
+    "/v1/pol/commitment/{keyset_id}/{B_}",
+    name="Get mint commitment",
+    summary="Get signed commitment for pending token",
+    tags=["Proof of Liabilities"],
+)
+async def get_mint_commitment(keyset_id: str, B_: str, amount: int):
+    """
+    Get a signed commitment promising token inclusion in today's epoch.
+    
+    The wallet can use this commitment as proof of mint misbehavior if the
+    token is not included in tomorrow's closed Merkle tree.
+    
+    Only available for tokens minted in the current (open) epoch.
+    """
+    service = _get_pol_service()
+    
+    # Verify this token exists in today's data
+    status, _ = await service.get_mint_proof_inclusion(keyset_id, B_)
+    
+    if status == "NOT_FOUND":
+        raise HTTPException(
+            status_code=404,
+            detail="Token not found in current epoch"
+        )
+    
+    if status == "INCLUDED":
+        # Token is in a closed epoch, no commitment needed
+        return {
+            "keyset_id": keyset_id,
+            "B_": B_,
+            "status": "ALREADY_CLOSED",
+            "commitment": None,
+            "message": "Token is already in a closed epoch with verifiable proof"
+        }
+    
+    # status == "PENDING_EPOCH" - create commitment
+    commitment = service.create_mint_commitment(keyset_id, B_, amount)
+    return {
+        "keyset_id": keyset_id,
+        "B_": B_,
+        "status": "PENDING_EPOCH",
+        "commitment": commitment.model_dump(),
+    }
+
+
+@router.get(
+    "/v1/pol/ots/{keyset_id}/{epoch_date}",
+    name="Download OTS file",
+    summary="Download raw .ots file",
+    tags=["Proof of Liabilities"],
+)
+async def download_ots_file(keyset_id: str, epoch_date: str):
+    """Download the raw binary .ots file for a specific keyset epoch."""
+    service = _get_pol_service()
+    
+    reports = await service.crud.get_pol_reports_by_date(
+        epoch_date=epoch_date, db=service.db
+    )
+
+    target_report = next((r for r in reports if r.get("keyset_id") == keyset_id), None)
+
+    if not target_report:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"No reports found for keyset {keyset_id} on {epoch_date}"
+        )
+
+    ots_proof_b64 = target_report.get("ots_proof")
+
+    if not ots_proof_b64:
+        raise HTTPException(
+            status_code=404, 
+            detail="No OTS proof available yet for this epoch"
+        )
+
+    ots_bytes = decode_ots_proof(ots_proof_b64)
+    if ots_bytes is None:
+        raise HTTPException(status_code=500, detail="Failed to decode OTS proof")
+
+    short_id = keyset_id[:12]
+    filename = f"pol_{short_id}_{epoch_date}.ots"
+
+    return Response(
+        content=ots_bytes,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Report-Hash": target_report.get("report_hash", ""),
+            "X-OTS-Confirmed": "true" if target_report.get("ots_confirmed") else "false",
+        }
+    )
