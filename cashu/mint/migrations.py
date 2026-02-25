@@ -1164,3 +1164,76 @@ async def m030_remove_overlong_witness_values(db: Database):
     Repeat m029 after limiting all new witness values to 1024 characters.
     """
     await m029_remove_overlong_witness_values(db)
+
+    
+async def m031_add_pol_reports_table(db: Database):
+    """
+    Create table to store Proof of Liabilities reports for each keyset epoch.
+    """
+    async with db.connect() as conn:
+        await conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {db.table_with_schema('pol_reports')} (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                keyset_id TEXT NOT NULL,
+                epoch_date TEXT NOT NULL,
+                epoch_start INTEGER NOT NULL,
+                epoch_end INTEGER NOT NULL,
+                previous_epoch_hash TEXT,
+                cumulative_minted {db.big_int} NOT NULL DEFAULT 0,
+                cumulative_burned {db.big_int} NOT NULL DEFAULT 0,
+                total_minted {db.big_int} NOT NULL DEFAULT 0,
+                total_burned {db.big_int} NOT NULL DEFAULT 0,
+                outstanding_balance {db.big_int} NOT NULL DEFAULT 0,
+                mint_root_hash TEXT NOT NULL,
+                mint_root_amount {db.big_int} NOT NULL DEFAULT 0,
+                burn_root_hash TEXT NOT NULL,
+                burn_root_amount {db.big_int} NOT NULL DEFAULT 0,
+                report_timestamp INTEGER NOT NULL,
+                report_hash TEXT NOT NULL,
+                report_signature TEXT,
+                ots_proof TEXT,
+                ots_confirmed INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT {db.timestamp_now},
+
+                UNIQUE (keyset_id, epoch_date)
+            );
+            """
+        )
+        await conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS pol_reports_keyset_idx
+            ON {db.table_with_schema('pol_reports')} (keyset_id);
+            """
+        )
+        await conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS pol_reports_epoch_idx
+            ON {db.table_with_schema('pol_reports')} (epoch_date);
+            """
+        )
+        await conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS pol_reports_ots_confirmed_idx
+            ON {db.table_with_schema('pol_reports')} (ots_confirmed);
+            """
+        )
+
+
+async def m032_add_pol_reports_expires_at(db: Database):
+    """
+    Add expires_at column to pol_reports for automatic pruning of old epochs.
+    """
+    async with db.connect() as conn:
+        await conn.execute(
+            f"""
+            ALTER TABLE {db.table_with_schema('pol_reports')}
+            ADD COLUMN expires_at INTEGER;
+            """
+        )
+        await conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS pol_reports_expires_at_idx
+            ON {db.table_with_schema('pol_reports')} (expires_at);
+            """
+        )

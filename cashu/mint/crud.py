@@ -327,6 +327,129 @@ class LedgerCrud(ABC):
         conn: Optional[Connection] = None,
     ) -> MintBalanceLogEntry | None: ...
 
+    @abstractmethod
+    async def get_all_mint_proofs_for_keyset(
+        self,
+        *,
+        keyset_id: str,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> List[Dict]: ...
+
+    @abstractmethod
+    async def get_all_burn_proofs_for_keyset(
+        self,
+        *,
+        keyset_id: str,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> List[Dict]: ...
+
+    @abstractmethod
+    async def get_mint_proofs_in_range(
+        self,
+        *,
+        keyset_id: str,
+        start_time: int,
+        end_time: int,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> List[Dict]: ...
+
+    @abstractmethod
+    async def get_burn_proofs_in_range(
+        self,
+        *,
+        keyset_id: str,
+        start_time: int,
+        end_time: int,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> List[Dict]: ...
+
+    @abstractmethod
+    async def store_pol_report(
+        self,
+        *,
+        keyset_id: str,
+        epoch_date: str,
+        epoch_start: int,
+        epoch_end: int,
+        previous_epoch_hash: Optional[str],
+        cumulative_minted: int,
+        cumulative_burned: int,
+        total_minted: int,
+        total_burned: int,
+        outstanding_balance: int,
+        mint_root_hash: str,
+        mint_root_amount: int,
+        burn_root_hash: str,
+        burn_root_amount: int,
+        report_timestamp: int,
+        report_hash: str,
+        report_signature: Optional[str] = None,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> None: ...
+
+    @abstractmethod
+    async def get_pol_reports_for_keyset(
+        self,
+        *,
+        keyset_id: str,
+        db: Database,
+        limit: int = 30,
+        conn: Optional[Connection] = None,
+    ) -> List[Dict]: ...
+
+    @abstractmethod
+    async def get_pol_report_for_epoch(
+        self,
+        *,
+        keyset_id: str,
+        epoch_date: str,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> Optional[Dict]: ...
+
+    @abstractmethod
+    async def update_pol_report_ots(
+        self,
+        *,
+        keyset_id: str,
+        epoch_date: str,
+        ots_proof: str,
+        ots_confirmed: bool,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> None: ...
+
+    @abstractmethod
+    async def get_unconfirmed_ots_proofs(
+        self,
+        *,
+        keyset_id: str,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> List[Dict]: ...
+
+    @abstractmethod
+    async def get_pol_reports_by_date(
+        self,
+        *,
+        epoch_date: str,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> List[Dict]: ...
+
+    @abstractmethod
+    async def get_latest_pol_report(
+        self,
+        *,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> List[Dict]: ...
+
 
 class LedgerCrudSqlite(LedgerCrud):
     """Implementation of LedgerCrud for sqlite.
@@ -1062,3 +1185,346 @@ class LedgerCrudSqlite(LedgerCrud):
             {"checking_id": checking_id},
         )
         return [MeltQuote.from_row(row) for row in results]  # type: ignore
+
+    async def get_all_mint_proofs_for_keyset(
+        self,
+        *,
+        keyset_id: str,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> List[Dict]:
+        rows = await (conn or db).fetchall(
+            f"""
+            SELECT amount, b_, c_, id AS keyset_id, dleq_e, dleq_s, created
+            FROM {db.table_with_schema('promises')}
+            WHERE id = :keyset_id AND c_ IS NOT NULL
+            ORDER BY created
+            """,
+            {"keyset_id": keyset_id},
+        )
+        return [dict(r) for r in rows] if rows else []
+
+    async def get_all_burn_proofs_for_keyset(
+        self,
+        *,
+        keyset_id: str,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> List[Dict]:
+        rows = await (conn or db).fetchall(
+            f"""
+            SELECT amount, secret, y, c, id AS keyset_id, witness, created
+            FROM {db.table_with_schema('proofs_used')}
+            WHERE id = :keyset_id
+            ORDER BY created
+            """,
+            {"keyset_id": keyset_id},
+        )
+        return [dict(r) for r in rows] if rows else []
+
+    async def get_mint_proofs_in_range(
+        self,
+        *,
+        keyset_id: str,
+        start_time: int,
+        end_time: int,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> List[Dict]:
+        rows = await (conn or db).fetchall(
+            f"""
+            SELECT amount, b_, c_, id AS keyset_id, dleq_e, dleq_s, created
+            FROM {db.table_with_schema('promises')}
+            WHERE id = :keyset_id AND c_ IS NOT NULL
+            AND created >= :start_time AND created <= :end_time
+            ORDER BY created
+            """,
+            {"keyset_id": keyset_id, "start_time": start_time, "end_time": end_time},
+        )
+        return [dict(r) for r in rows] if rows else []
+
+    async def get_burn_proofs_in_range(
+        self,
+        *,
+        keyset_id: str,
+        start_time: int,
+        end_time: int,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> List[Dict]:
+        rows = await (conn or db).fetchall(
+            f"""
+            SELECT amount, secret, y, c, id AS keyset_id, witness, created
+            FROM {db.table_with_schema('proofs_used')}
+            WHERE id = :keyset_id
+            AND created >= :start_time AND created <= :end_time
+            ORDER BY created
+            """,
+            {"keyset_id": keyset_id, "start_time": start_time, "end_time": end_time},
+        )
+        return [dict(r) for r in rows] if rows else []
+
+    async def store_pol_report(
+        self,
+        *,
+        keyset_id: str,
+        epoch_date: str,
+        epoch_start: int,
+        epoch_end: int,
+        previous_epoch_hash: Optional[str],
+        cumulative_minted: int,
+        cumulative_burned: int,
+        total_minted: int,
+        total_burned: int,
+        outstanding_balance: int,
+        mint_root_hash: str,
+        mint_root_amount: int,
+        burn_root_hash: str,
+        burn_root_amount: int,
+        report_timestamp: int,
+        report_hash: str,
+        report_signature: Optional[str] = None,
+        expires_at: Optional[int] = None,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> None:
+        await (conn or db).execute(
+            f"""
+            INSERT OR REPLACE INTO {db.table_with_schema('pol_reports')}
+            (keyset_id, epoch_date, epoch_start, epoch_end, previous_epoch_hash,
+             cumulative_minted, cumulative_burned, total_minted, total_burned, 
+             outstanding_balance, mint_root_hash, mint_root_amount, burn_root_hash, 
+             burn_root_amount, report_timestamp, report_hash, report_signature, expires_at, created_at)
+            VALUES (:keyset_id, :epoch_date, :epoch_start, :epoch_end, :previous_epoch_hash,
+                    :cumulative_minted, :cumulative_burned, :total_minted, 
+                    :total_burned, :outstanding_balance, :mint_root_hash, :mint_root_amount,
+                    :burn_root_hash, :burn_root_amount, :report_timestamp, :report_hash, :report_signature, :expires_at, :created_at)
+            """,
+            {
+                "keyset_id": keyset_id,
+                "epoch_date": epoch_date,
+                "epoch_start": epoch_start,
+                "epoch_end": epoch_end,
+                "previous_epoch_hash": previous_epoch_hash,
+                "cumulative_minted": cumulative_minted,
+                "cumulative_burned": cumulative_burned,
+                "total_minted": total_minted,
+                "total_burned": total_burned,
+                "outstanding_balance": outstanding_balance,
+                "mint_root_hash": mint_root_hash,
+                "mint_root_amount": mint_root_amount,
+                "burn_root_hash": burn_root_hash,
+                "burn_root_amount": burn_root_amount,
+                "report_timestamp": report_timestamp,
+                "report_hash": report_hash,
+                "report_signature": report_signature,
+                "expires_at": expires_at,
+                "created_at": db.to_timestamp(db.timestamp_now_str()),
+            },
+        )
+
+    async def get_pol_reports_for_keyset(
+        self,
+        *,
+        keyset_id: str,
+        db: Database,
+        limit: int = 30,
+        conn: Optional[Connection] = None,
+    ) -> List[Dict]:
+        rows = await (conn or db).fetchall(
+            f"""
+            SELECT * FROM {db.table_with_schema('pol_reports')}
+            WHERE keyset_id = :keyset_id
+            ORDER BY epoch_date DESC
+            LIMIT :limit
+            """,
+            {"keyset_id": keyset_id, "limit": limit},
+        )
+        return [dict(r) for r in rows] if rows else []
+
+    async def get_pol_report_for_epoch(
+        self,
+        *,
+        keyset_id: str,
+        epoch_date: str,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> Optional[Dict]:
+        row = await (conn or db).fetchone(
+            f"""
+            SELECT * FROM {db.table_with_schema('pol_reports')}
+            WHERE keyset_id = :keyset_id AND epoch_date = :epoch_date
+            """,
+            {"keyset_id": keyset_id, "epoch_date": epoch_date},
+        )
+        return dict(row) if row else None
+
+    async def update_pol_report_ots(
+        self,
+        *,
+        keyset_id: str,
+        epoch_date: str,
+        ots_proof: str,
+        ots_confirmed: bool,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> None:
+        await (conn or db).execute(
+            f"""
+            UPDATE {db.table_with_schema('pol_reports')}
+            SET ots_proof = :ots_proof, ots_confirmed = :ots_confirmed
+            WHERE keyset_id = :keyset_id AND epoch_date = :epoch_date
+            """,
+            {
+                "keyset_id": keyset_id,
+                "epoch_date": epoch_date,
+                "ots_proof": ots_proof,
+                "ots_confirmed": 1 if ots_confirmed else 0,
+            },
+        )
+
+    async def get_unconfirmed_ots_proofs(
+        self,
+        *,
+        keyset_id: str,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> List[Dict]:
+        rows = await (conn or db).fetchall(
+            f"""
+            SELECT * FROM {db.table_with_schema('pol_reports')}
+            WHERE keyset_id = :keyset_id AND ots_confirmed = 0 AND ots_proof IS NOT NULL
+            ORDER BY epoch_date
+            """,
+            {"keyset_id": keyset_id},
+        )
+        return [dict(r) for r in rows] if rows else []
+
+    async def get_pol_reports_by_date(
+        self,
+        *,
+        epoch_date: str,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> List[Dict]:
+        rows = await (conn or db).fetchall(
+            f"""
+            SELECT * FROM {db.table_with_schema('pol_reports')}
+            WHERE epoch_date = :epoch_date
+            ORDER BY keyset_id
+            """,
+            {"epoch_date": epoch_date},
+        )
+        return [dict(r) for r in rows] if rows else []
+
+    async def get_latest_pol_report(
+        self,
+        *,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> List[Dict]:
+        rows = await (conn or db).fetchall(
+            f"""
+            SELECT pr.* FROM {db.table_with_schema('pol_reports')} pr
+            INNER JOIN (
+                SELECT keyset_id, MAX(epoch_date) as max_date
+                FROM {db.table_with_schema('pol_reports')}
+                GROUP BY keyset_id
+            ) latest ON pr.keyset_id = latest.keyset_id AND pr.epoch_date = latest.max_date
+            ORDER BY pr.keyset_id
+            """
+        )
+        return [dict(r) for r in rows] if rows else []
+
+    async def get_expired_pol_reports(
+        self,
+        *,
+        db: Database,
+        current_time: int,
+        conn: Optional[Connection] = None,
+    ) -> List[Dict]:
+        """Get all pol_reports that have expired based on expires_at timestamp."""
+        rows = await (conn or db).fetchall(
+            f"""
+            SELECT * FROM {db.table_with_schema('pol_reports')}
+            WHERE expires_at IS NOT NULL AND expires_at < :current_time
+            ORDER BY epoch_date
+            """,
+            {"current_time": current_time},
+        )
+        return [dict(r) for r in rows] if rows else []
+
+    async def delete_pol_report(
+        self,
+        *,
+        keyset_id: str,
+        epoch_date: str,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> int:
+        """Delete a specific pol_report. Returns number of rows deleted."""
+        result = await (conn or db).execute(
+            f"""
+            DELETE FROM {db.table_with_schema('pol_reports')}
+            WHERE keyset_id = :keyset_id AND epoch_date = :epoch_date
+            """,
+            {"keyset_id": keyset_id, "epoch_date": epoch_date},
+        )
+        return result.rowcount if hasattr(result, 'rowcount') else 0
+
+    async def delete_expired_pol_reports(
+        self,
+        *,
+        db: Database,
+        current_time: int,
+        conn: Optional[Connection] = None,
+    ) -> int:
+        """Delete all expired pol_reports. Returns number of rows deleted."""
+        result = await (conn or db).execute(
+            f"""
+            DELETE FROM {db.table_with_schema('pol_reports')}
+            WHERE expires_at IS NOT NULL AND expires_at < :current_time
+            """,
+            {"current_time": current_time},
+        )
+        return result.rowcount if hasattr(result, 'rowcount') else 0
+
+    async def delete_proofs_used_in_range(
+        self,
+        *,
+        keyset_id: str,
+        start_time: int,
+        end_time: int,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> int:
+        """Delete burn proofs (proofs_used) in a time range. Returns rows deleted."""
+        result = await (conn or db).execute(
+            f"""
+            DELETE FROM {db.table_with_schema('proofs_used')}
+            WHERE id = :keyset_id
+            AND created >= :start_time AND created <= :end_time
+            """,
+            {"keyset_id": keyset_id, "start_time": start_time, "end_time": end_time},
+        )
+        return result.rowcount if hasattr(result, 'rowcount') else 0
+
+    async def delete_promises_in_range(
+        self,
+        *,
+        keyset_id: str,
+        start_time: int,
+        end_time: int,
+        db: Database,
+        conn: Optional[Connection] = None,
+    ) -> int:
+        """Delete mint proofs (promises) in a time range. Returns rows deleted."""
+        result = await (conn or db).execute(
+            f"""
+            DELETE FROM {db.table_with_schema('promises')}
+            WHERE id = :keyset_id AND c_ IS NOT NULL
+            AND created >= :start_time AND created <= :end_time
+            """,
+            {"keyset_id": keyset_id, "start_time": start_time, "end_time": end_time},
+        )
+        return result.rowcount if hasattr(result, 'rowcount') else 0

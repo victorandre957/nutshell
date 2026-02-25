@@ -1499,3 +1499,181 @@ async def lnurl_mint(ctx: Context):
     except Exception as e:
         print(f"Error minting quotes: {e}")
 
+
+@cli.command("pol", help="Proof of Liabilities verification.")
+@click.option(
+    "--verify",
+    "-v",
+    default=False,
+    is_flag=True,
+    help="Verify all wallet tokens against mint PoL report.",
+)
+@click.option(
+    "--check",
+    "-c",
+    default=None,
+    help="Check a specific B_ (mint) or Y (burn) value.",
+    type=str,
+)
+@click.option(
+    "--status",
+    "-s",
+    default=False,
+    is_flag=True,
+    help="Show PoL status and current epoch info.",
+)
+@click.option(
+    "--step-by-step",
+    default=False,
+    is_flag=True,
+    help="Show detailed step-by-step proof verification.",
+)
+@click.option(
+    "--epoch",
+    "-e",
+    default=None,
+    help="Epoch date to check (YYYY-MM-DD). Defaults to current.",
+    type=str,
+)
+@click.pass_context
+@coro
+@init_auth_wallet
+async def pol(
+    ctx: Context,
+    verify: bool,
+    check: Optional[str],
+    status: bool,
+    step_by_step: bool,
+    epoch: Optional[str],
+):
+    """Verify wallet tokens against mint's Proof of Liabilities (NUT-28)."""
+    from ..pol_service import WalletPoLService
+    from ...core.proof_of_liabilities import get_epoch_date
+
+    wallet: Wallet = ctx.obj["WALLET"]
+    await wallet.load_mint()
+
+    pol_service = WalletPoLService(wallet.db)
+    keyset_id = wallet.keyset_id
+
+    if status:
+        print(f"\n=== Proof of Liabilities Status ===")
+        print(f"Mint URL: {wallet.url}")
+        print(f"Keyset ID: {keyset_id}")
+        print(f"Current Epoch: {get_epoch_date()}")
+        if epoch:
+            print(f"Query Epoch: {epoch}")
+
+        try:
+            roots = await wallet.get_pol_roots(keyset_id, epoch_date=epoch)
+            print(f"\n--- Epoch Info ---")
+            print(f"Mint Root: {roots.get('mint_root', 'N/A')}")
+            print(f"Burn Root: {roots.get('burn_root', 'N/A')}")
+            print(f"Outstanding Balance: {roots.get('outstanding_balance', 'N/A')}")
+            print(f"Total Minted: {roots.get('total_minted', 'N/A')}")
+            print(f"Total Burned: {roots.get('total_burned', 'N/A')}")
+        except Exception as e:
+            print(f"Error fetching PoL roots: {e}")
+        return
+
+    if check:
+        print(f"\n=== Checking PoL Value ===")
+        print(f"Value: {check[:32]}{'...' if len(check) > 32 else ''}")
+        epoch_date = epoch or get_epoch_date()
+        print(f"Epoch: {epoch_date}")
+
+        found = False
+        for tree_type, api_func in [
+            ("mint", wallet.verify_pol_mint),
+            ("burn", wallet.verify_pol_burn),
+        ]:
+            try:
+                resp = await api_func(keyset_id, check, epoch_date=epoch_date)
+                status_val = resp.get("status", "NOT_FOUND")
+                proof = resp.get("proof")
+
+                if status_val != "NOT_FOUND":
+                    found = True
+                    print(f"\n--- {tree_type.upper()} Tree ---")
+                    print(f"Status: {status_val}")
+
+                    if proof:
+                        print(f"Leaf Amount: {proof.get('leaf_amount', 'N/A')}")
+                        print(f"Root Amount: {proof.get('root_amount', 'N/A')}")
+                        print(f"Siblings Count: {len(proof.get('siblings', []))}")
+
+                        is_valid, msg = pol_service.verify_merkle_proof_locally(proof)
+                        print(f"\nLocal Verification: {'PASSED' if is_valid else 'FAILED'}")
+                        print(f"Details: {msg}")
+
+                        if step_by_step:
+                            print(f"\n--- Step-by-Step Verification ---")
+                            steps = pol_service.verify_proof_step_by_step(proof)
+                            for step_info in steps.get("steps", []):
+                                print(
+                                    f"  Step {step_info['step']}: "
+                                    f"hash={step_info['hash'][:16]}... "
+                                    f"amount={step_info['amount']}"
+                                )
+                            print(f"\n  Final Hash: {steps.get('final_hash', 'N/A')}")
+                            print(f"  Expected Root: {steps.get('expected_root_hash', 'N/A')}")
+                            print(f"  Match: {steps.get('valid', False)}")
+                    break
+            except Exception as e:
+                logger.debug(f"Error checking {tree_type}: {e}")
+
+        if not found:
+            print(f"\nNOT FOUND in any tree for epoch {epoch_date}")
+        return
+
+    if verify:
+        print(f"\n=== Full PoL Verification ===")
+        print(f"Keyset: {keyset_id}")
+        print(f"Verifying wallet tokens against mint's PoL report...\n")
+
+        results = await pol_service.verify_with_api(
+            wallet,
+            keyset_id,
+            verify_proofs_locally=True,
+        )
+
+        print(f"Epoch: {results.get('epoch_date', 'N/A')}")
+        print(f"Checked Epoch: {results.get('checked_epoch', 'N/A')}")
+
+        print(f"\n--- Mint Verification ---")
+        print(f"Verified: {len(results.get('mint_verified', []))}")
+        print(f"Pending: {len(results.get('mint_pending', []))}")
+        print(f"Missing: {len(results.get('mint_missing', []))}")
+        print(f"Invalid Proofs: {len(results.get('mint_proof_invalid', []))}")
+
+        print(f"\n--- Burn Verification ---")
+        print(f"Verified: {len(results.get('burn_verified', []))}")
+        print(f"Pending: {len(results.get('burn_pending', []))}")
+        print(f"Missing: {len(results.get('burn_missing', []))}")
+
+        print(f"\n--- Balance Check ---")
+        print(f"Wallet Balance: {results.get('wallet_balance', 'N/A')}")
+        print(f"Reported Outstanding: {results.get('reported_outstanding', 'N/A')}")
+
+        print(f"\n--- Overall ---")
+        print(f"Is Valid: {'YES' if results.get('is_valid') else 'NO'}")
+        print(f"Local Verification: {'ENABLED' if results.get('local_verification') else 'DISABLED'}")
+
+        if results.get("alerts"):
+            print(f"\n--- ALERTS ---")
+            for alert in results["alerts"]:
+                print(f"  {alert}")
+
+        if results.get("mint_verified"):
+            print(f"\n--- Verified Mints (B_) ---")
+            for item in results["mint_verified"][:5]: 
+                print(
+                    f"  {item['B_'][:24]}... | epoch={item['epoch']} | "
+                    f"local={'YES' if item.get('local_verified') else 'NO'}"
+                )
+            if len(results["mint_verified"]) > 5:
+                print(f"  ... and {len(results['mint_verified']) - 5} more")
+        return results
+
+    print("Use --verify, --check <value>, or --status to interact with PoL.")
+    print("Run 'cashu pol --help' for more options.")

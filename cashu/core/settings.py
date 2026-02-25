@@ -196,6 +196,45 @@ class FakeWalletSettings(MintSettings):
     fakewallet_balance_eur: int = Field(default=1337)
 
 
+class MintPoLSettings(MintSettings):
+    """Proof of Liabilities settings."""
+    pol_enabled: bool = Field(
+        default=True,
+        title="Enable Proof of Liabilities",
+        description="Enable PoL features including automatic epoch closing and OTS timestamping.",
+    )
+    pol_epoch_close_interval: int = Field(
+        default=3600,
+        title="Epoch close check interval",
+        description="Interval (in seconds) to check for unclosed past epochs.",
+    )
+    pol_epoch_lookback_days: int = Field(
+        default=30,
+        title="Epoch lookback days",
+        description="Number of past days to check for unclosed epochs.",
+    )
+    pol_ots_upgrade_interval: int = Field(
+        default=3600,
+        title="OTS upgrade interval",
+        description="Interval (in seconds) to upgrade pending OpenTimestamps proofs.",
+    )
+    pol_retention_months: int = Field(
+        default=24,
+        title="Epoch retention period",
+        description="Number of months to retain epoch data before pruning. Set to 0 to disable pruning.",
+    )
+    pol_tree_size_exponent: int = Field(
+        default=24,
+        title="Merkle tree size exponent",
+        description="Exponent for fixed tree size (2^n). Default 24 = ~16M leaves.",
+    )
+    pol_prune_interval: int = Field(
+        default=86400,
+        title="Prune check interval",
+        description="Interval (in seconds) to check for expired epochs to prune.",
+    )
+
+
 class MintInformation(CashuSettings):
     mint_info_name: str = Field(default="Cashu mint")
     mint_info_description: Optional[str] = Field(default=None)
@@ -333,6 +372,7 @@ class Settings(
     MintDeprecationFlags,
     MintManagementRPCSettings,
     MintWatchdogSettings,
+    MintPoLSettings,
     MintSettings,
     MintInformation,
     WalletSettings,

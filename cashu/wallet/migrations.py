@@ -334,3 +334,42 @@ async def m016_remove_nostr_table(db: Database):
             DROP TABLE IF EXISTS nostr;
             """
         )
+
+
+async def m017_add_pol_records_table(db: Database):
+    """
+    Create table to store PoL records (blind signatures and spent secrets) for verification.
+    """
+    async with db.connect() as conn:
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pol_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                keyset_id TEXT NOT NULL,
+                B_ TEXT NOT NULL,
+                C_ TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                dleq_e TEXT,
+                dleq_s TEXT,
+                dleq_r TEXT,
+                secret TEXT NOT NULL,
+                Y TEXT NOT NULL,
+                created INTEGER NOT NULL,
+                burned INTEGER DEFAULT 0,
+                burned_at INTEGER,
+
+                UNIQUE (Y)
+            );
+            """
+        )
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS pol_records_keyset_idx ON pol_records (keyset_id);
+            """
+        )
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS pol_records_B_idx ON pol_records (B_);
+            """
+        )
+
