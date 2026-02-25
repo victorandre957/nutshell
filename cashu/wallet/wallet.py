@@ -1,8 +1,9 @@
+import asyncio
 import copy
 import json
 import threading
 import time
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from bip32 import BIP32
 from loguru import logger
@@ -51,12 +52,14 @@ from .crud import (
     get_mint_by_url,
     get_proofs,
     invalidate_proof,
+    mark_pol_record_burned,
     secret_used,
     set_secret_derivation,
     store_bolt11_melt_quote,
     store_bolt11_mint_quote,
     store_keyset,
     store_mint,
+    store_pol_record,
     store_proof,
     update_bolt11_melt_quote,
     update_bolt11_mint_quote,
@@ -985,6 +988,14 @@ class Wallet(
                 # we don't have the keyset for this promise, so we load all keysets from the mint
                 await self.load_mint_keysets()
                 assert promise.id in self.keysets, "Could not load keyset."
+            
+            keyset = self.keysets[promise.id]
+            if not keyset.active:
+                raise Exception(
+                    f"PoL: Rejecting token from inactive keyset {promise.id}. "
+                    f"Wallets must only accept tokens from active keysets."
+                )
+
             C_ = PublicKey(bytes.fromhex(promise.C_))
             C = b_dhke.step3_alice(
                 C_, r, self.keysets[promise.id].public_keys[promise.amount]
@@ -1014,6 +1025,33 @@ class Wallet(
                 )
 
             proofs.append(proof)
+
+            pol_saved = False
+            last_error = ""
+            for retry in range(3):
+                try:
+                    await store_pol_record(
+                        db=self.db,
+                        keyset_id=promise.id,
+                        B_=B_.format().hex(),
+                        C_=promise.C_,
+                        amount=promise.amount,
+                        secret=secret,
+                        Y=proof.Y,
+                        created=int(time.time()),
+                        dleq_e=promise.dleq.e if promise.dleq else None,
+                        dleq_s=promise.dleq.s if promise.dleq else None,
+                        dleq_r=r.to_hex() if promise.dleq else None,
+                    )
+                    pol_saved = True
+                    break
+                except Exception as e:
+                    last_error = str(e)
+                    if retry < 2:
+                        await asyncio.sleep(0.1 * (retry + 1))  # backoff: 0.1s, 0.2s
+            
+            if not pol_saved:
+                logger.warning(f"PoL record save failed after 3 retries: {last_error}")
 
             logger.trace(
                 f"Created proof: {proof}, r: {r.to_hex()} out of promise {promise}"
@@ -1151,6 +1189,10 @@ class Wallet(
             try:
                 # mark proof as spent
                 await invalidate_proof(p, db=self.db)
+                try:
+                    await mark_pol_record_burned(db=self.db, Y=p.Y)
+                except Exception as e:
+                    logger.trace(f"Could not mark PoL record as burned: {e}")
             except Exception as e:
                 logger.error(f"DB error while invalidating proof: {e}")
 
@@ -1510,3 +1552,55 @@ class Wallet(
         )
         logger.debug(f"Restored {len(restored_promises)} promises")
         return next_restored_output_index, proofs
+
+    async def verify_pol(self, keyset_id: Optional[str] = None) -> Dict[str, Any]:
+        """Verify mint's PoL report against locally stored records."""
+        from .pol_service import WalletPoLService
+
+        pol_service = WalletPoLService(self.db)
+        keyset_ids = [keyset_id] if keyset_id else list(self.keysets.keys())
+
+        results = {}
+        for kid in keyset_ids:
+            try:
+                result = await pol_service.verify_with_api(self, kid)
+                results[kid] = result
+                if not result["is_valid"]:
+                    logger.warning(f"PoL verification failed for {kid}: {result['alerts']}")
+            except Exception as e:
+                results[kid] = {"error": str(e), "is_valid": False}
+
+        return results
+
+    async def start_pol_verification(
+        self,
+        interval: int = 3600,
+        callback: Optional[Callable[[Dict], None]] = None,
+    ) -> None:
+        """Start periodic PoL verification in background."""
+        from .pol_service import WalletPoLService
+
+        pol_service = WalletPoLService(self.db)
+        keyset_ids = list(self.keysets.keys())
+        
+        async def alert_callback(result: Dict):
+            logger.error(f"PoL ALERT for {result['keyset_id']}: {result['alerts']}")
+            if callback:
+                callback(result)
+        
+        await pol_service.start_periodic_verification(
+            api_client=self,
+            keyset_ids=keyset_ids,
+            interval=interval,
+            callback=alert_callback,
+        )
+
+    async def get_pol_roots(self, keyset_id: Optional[str] = None, epoch_date: Optional[str] = None) -> Dict:
+        """Get current PoL roots from mint."""
+        kid = keyset_id or self.keyset_id
+        return await super().get_pol_roots(kid, epoch_date=epoch_date)
+
+    async def get_pol_history(self, keyset_id: Optional[str] = None) -> Dict:
+        """Get PoL history from mint."""
+        kid = keyset_id or self.keyset_id
+        return await super().get_pol_history(kid)

@@ -618,3 +618,111 @@ async def get_mint_by_url(
         {"url": url},
     )
     return WalletMint.model_validate(dict(row)) if row else None
+
+
+async def store_pol_record(
+    db: Database,
+    keyset_id: str,
+    B_: str,
+    C_: str,
+    amount: int,
+    secret: str,
+    Y: str,
+    created: int,
+    dleq_e: Optional[str] = None,
+    dleq_s: Optional[str] = None,
+    dleq_r: Optional[str] = None,
+    conn: Optional[Connection] = None,
+) -> None:
+    await (conn or db).execute(
+        """
+        INSERT OR REPLACE INTO pol_records
+          (keyset_id, B_, C_, amount, dleq_e, dleq_s, dleq_r, secret, Y, created, burned, burned_at)
+        VALUES (:keyset_id, :B_, :C_, :amount, :dleq_e, :dleq_s, :dleq_r, :secret, :Y, :created, 0, NULL)
+        """,
+        {
+            "keyset_id": keyset_id,
+            "B_": B_,
+            "C_": C_,
+            "amount": amount,
+            "dleq_e": dleq_e,
+            "dleq_s": dleq_s,
+            "dleq_r": dleq_r,
+            "secret": secret,
+            "Y": Y,
+            "created": created,
+        },
+    )
+
+
+async def mark_pol_record_burned(
+    db: Database,
+    Y: str,
+    conn: Optional[Connection] = None,
+) -> None:
+    await (conn or db).execute(
+        """
+        UPDATE pol_records
+        SET burned = 1, burned_at = :burned_at
+        WHERE Y = :Y
+        """,
+        {
+            "Y": Y,
+            "burned_at": int(time.time()),
+        },
+    )
+
+
+async def get_pol_records(
+    db: Database,
+    keyset_id: Optional[str] = None,
+    burned: Optional[bool] = None,
+    conn: Optional[Connection] = None,
+) -> List[Dict[str, Any]]:
+    clauses = []
+    values: Dict[str, Any] = {}
+    if keyset_id:
+        clauses.append("keyset_id = :keyset_id")
+        values["keyset_id"] = keyset_id
+    if burned is not None:
+        clauses.append("burned = :burned")
+        values["burned"] = 1 if burned else 0
+    where = ""
+    if clauses:
+        where = f"WHERE {' AND '.join(clauses)}"
+    rows = await (conn or db).fetchall(
+        f"""
+        SELECT * FROM pol_records {where}
+        """,
+        values,
+    )
+    return [dict(r) for r in rows] if rows else []
+
+
+async def get_pol_record_by_Y(
+    db: Database,
+    Y: str,
+    conn: Optional[Connection] = None,
+) -> Optional[Dict[str, Any]]:
+    row = await (conn or db).fetchone(
+        """
+        SELECT * FROM pol_records WHERE Y = :Y
+        """,
+        {"Y": Y},
+    )
+    return dict(row) if row else None
+
+
+async def get_pol_record_by_B(
+    db: Database,
+    B_: str,
+    conn: Optional[Connection] = None,
+) -> Optional[Dict[str, Any]]:
+    row = await (conn or db).fetchone(
+        """
+        SELECT * FROM pol_records WHERE B_ = :B_
+        """,
+        {"B_": B_},
+    )
+    return dict(row) if row else None
+

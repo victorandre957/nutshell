@@ -660,3 +660,55 @@ class LedgerAPI(SupportsAuth):
         self.raise_on_error_request(resp)
         response_dict = resp.json()
         return PostAuthBlindMintResponse.model_validate(response_dict).signatures
+
+    @async_set_httpx_client
+    async def get_pol_roots(self, keyset_id: str, epoch_date: Optional[str] = None) -> dict:
+        """Get current PoL Merkle roots for a keyset."""
+        url = f"pol/roots/{keyset_id}"
+        if epoch_date:
+            url += f"?epoch_date={epoch_date}"
+        resp = await self._request("GET", url)
+        self.raise_on_error_request(resp)
+        return resp.json()
+
+    @async_set_httpx_client
+    async def get_pol_history(self, keyset_id: str, limit: int = 30) -> dict:
+        """Get historical PoL epochs for a keyset."""
+        resp = await self._request("GET", f"pol/history/{keyset_id}?limit={limit}")
+        self.raise_on_error_request(resp)
+        return resp.json()
+
+    @async_set_httpx_client
+    async def verify_pol_mint(self, keyset_id: str, B_: str, epoch_date: Optional[str] = None) -> dict:
+        """Verify B_ is included in mint Merkle tree."""
+        url = f"pol/verify/mint/{keyset_id}/{B_}"
+        if epoch_date:
+            url += f"?epoch_date={epoch_date}"
+        resp = await self._request("GET", url)
+        self.raise_on_error_request(resp)
+        return resp.json()
+
+    @async_set_httpx_client
+    async def verify_pol_burn(self, keyset_id: str, Y: str, epoch_date: Optional[str] = None) -> dict:
+        """Verify Y is included in burn Merkle tree."""
+        url = f"pol/verify/burn/{keyset_id}/{Y}"
+        if epoch_date:
+            url += f"?epoch_date={epoch_date}"
+        resp = await self._request("GET", url)
+        self.raise_on_error_request(resp)
+        return resp.json()
+
+    @async_set_httpx_client
+    async def get_pol_commitment(self, keyset_id: str, B_: str, amount: int) -> dict:
+        """Get signed commitment for a pending token."""
+        url = f"pol/commitment/{keyset_id}/{B_}?amount={amount}"
+        resp = await self._request("GET", url)
+        self.raise_on_error_request(resp)
+        return resp.json()
+
+    @async_set_httpx_client
+    async def download_ots(self, keyset_id: str, epoch_date: str) -> bytes:
+        """Download raw .ots file for an epoch."""
+        resp = await self._request("GET", f"pol/ots/{keyset_id}/{epoch_date}")
+        self.raise_on_error_request(resp)
+        return resp.content
